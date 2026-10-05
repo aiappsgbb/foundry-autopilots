@@ -11,11 +11,15 @@ TOKEN=$(az account get-access-token --resource https://ai.azure.com --query acce
 
 ## Stage A details
 
-**What `azd provision` does.** The sample's `preprovision` hook registers resource providers. Bicep creates a
-Foundry account and project, a model deployment, a container registry, and Application Insights. The
-`postprovision` hook then creates a Foundry toolbox (web search, code interpreter), builds the image in the
-registry (`az acr build`), creates the agent version, and publishes it. To rerun only the hooks after a change, run
-`azd provision` again: each run creates a new agent version.
+**What `azd provision` creates.** Tell the user this list before running it:
+
+- resource providers registered on the subscription (`preprovision` hook);
+- a Foundry account and project, a model deployment, a container registry and Application Insights (Bicep);
+- a Foundry toolbox with web search and code interpreter, the container image (built in the registry with
+  `az acr build`), a hosted agent version with its blueprint and identity, a Foundry User role assignment for the
+  agent identity, and a Microsoft 365 publish request (`postprovision` hook).
+
+Every rerun of `azd provision` creates a new agent version but doesn't republish (see `appVersion` below).
 
 **The publish request** (`scripts/publish-digital-worker.ps1`). These fields make it an autopilot rather than a
 store agent:
@@ -67,7 +71,7 @@ session = await client.create_session(
     tools=host_tools,                                       # your own tools: save a redline, remember, send one email
     mcp_servers={"m365-mail": {"type": "http", "url": "https://agent365.svc.cloud.microsoft/agents/servers/mcp_MailTools",
                                "tools": ["*"], "headers": {"Authorization": "Bearer " + mcp_token}}},  # from _acquire_mcp_token
-    enable_skills=True, skill_directories=[skills_dir],     # B3
+    enable_skills=True, skill_directories=[skills_dir],     # B4
     custom_agents=sub_agents,                               # e.g. one "item-worker" per separate ask, run in parallel
     infinite_sessions={"enabled": True},                    # background context compaction
     on_permission_request=permission_handler,               # B2
@@ -129,7 +133,7 @@ What we learned wiring it into a hosted container:
 - **Test the policy** with AGT's own engine before you build: load `lib/policy.mjs` from the installed extension and
   call `evaluatePreToolUse` for each tool call you expect.
 
-## B3. Foundry Skills
+## B4. Foundry Skills
 
 Each skill is a folder with a `SKILL.md` (front matter `name` equal to the folder name, plus `description`). The
 instance identity needs **Foundry User** on the Foundry resource. Header `Foundry-Features: Skills=V1Preview`,
@@ -145,7 +149,7 @@ instance identity needs **Foundry User** on the Foundry resource. Header `Foundr
 In the container, at most once a minute, download each skill's default version into the directory you pass as
 `skill_directories`. Unpack into a staging folder first, then rename, so the runtime never sees half a skill.
 
-## B4. Foundry memory store
+## B5. Foundry memory store
 
 Create it once (header `Foundry-Features: MemoryStores=V1Preview`, `api-version=v1`):
 
@@ -164,7 +168,7 @@ the agent knows about someone, and `<agent>` for its own open items. Build the r
 conversation, bound to the authenticated sender, so the model can never pass a scope. Load person memories only in
 one-to-one conversations, so nothing private comes up in a group chat.
 
-## B5. Versions, release and rollback
+## B7. Versions, release and rollback
 
 Header `Foundry-Features: DigitalWorker=V1Preview`, `api-version=2025-11-15-preview`.
 
@@ -176,13 +180,11 @@ Header `Foundry-Features: DigitalWorker=V1Preview`, `api-version=2025-11-15-prev
   `agent_endpoint.version_selector.version_selection_rules = [{"type": "FixedRatio", "agent_version": "<n>",
   "traffic_percentage": 100}]`. Send the current `protocol_configuration` and `authorization_schemes` back
   unchanged, and read the agent back to check them.
+- **Auth schemes:** the sample sets `agent_endpoint.authorization_schemes` to `[{"type": "BotServiceRbac"}]`. If
+  email or Word comment events don't reach the agent, set it to `[{"type": "Entra"}, {"type": "BotServiceTenant"}]`
+  in the same PATCH. `BotServiceTenant` accepts any caller in the project's tenant, so filter senders in code (B6).
 - **Rollback:** the same call with the previous version. Sessions bound to the old version keep running it until you
   delete them (`DELETE $EP/agents/$AGENT/endpoint/sessions/<id>`).
-- **Behaviour changes** don't need a version: upload a new skill version and make it the default (B3).
+- **Behaviour changes** don't need a version: upload a new skill version and make it the default (B4).
 - **Read what happened:** stream the session log (Stage A). Log tool names, AGT decisions and timings, never
   message content.
-
-## Removing everything
-
-In the Microsoft 365 admin center, delete each instance (frees its seats) and retire the blueprint. Then `azd down`
-in the sample folder. Deleting the Azure resources doesn't remove hired instances.
